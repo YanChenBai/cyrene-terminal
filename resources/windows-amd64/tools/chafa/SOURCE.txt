@@ -1,0 +1,6 @@
+Chafa 1.18.3, unmodified official Windows executable.
+Binary: https://hpjansson.org/chafa/releases/static/chafa-1.18.3-1-x86_64-windows.zip
+Corresponding source: https://github.com/hpjansson/chafa/releases/download/1.18.3/chafa-1.18.3.tar.xz
+Project: https://hpjansson.org/chafa/
+License: LGPL-3.0-or-later; see COPYING and COPYING.LESSER.
+Runs as a separate command-line program; no Chafa library is linked into Cyrene.

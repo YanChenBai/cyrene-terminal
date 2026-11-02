@@ -1,0 +1,40 @@
+# Generated builds and native tooling
+/build/
+/dist/
+/.mygo/
+/.template-backup/
+node_modules/
+mygo_windows_*.syso
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+coverage/
+# This unmodified helper is intentionally distributed with its licenses.
+!/resources/windows-amd64/tools/chafa/chafa.exe
+
+# Test artifacts and Python caches
+test-results/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~

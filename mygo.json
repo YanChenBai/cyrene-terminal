@@ -1,0 +1,8 @@
+{
+  "name": "Cyrene Terminal",
+  "slug": "cyrene-terminal",
+  "identifier": "dev.cyrene.terminal",
+  "version": "0.0.0",
+  "out": "build",
+  "main": "./cmd/cyrene-terminal"
+}
