@@ -168,7 +168,7 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         report["ungrouped_starts_in_user_home"] = True
 
         def set_field(label, text):
-            node = wait_for(lambda: next((n for n in tree() if n.get("label") == label and n.get("role") == "textField"), None))
+            node = wait_for(lambda: next((n for n in tree() if n.get("label") == label and n.get("role") in ("textField", "comboBox")), None))
             rpc("act", id=node["id"], action="setValue", text=text)
 
         def add_group(name, directory):
@@ -291,7 +291,7 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         report["sidebar_fully_hidden_toggle_in_titlebar"] = True
         click("切换侧栏")
         click("外观设置")
-        font = wait_for(lambda: next((n for n in tree() if n.get("label") == "终端字体" and n.get("role") == "textField"), None))
+        font = wait_for(lambda: next((n for n in tree() if n.get("label") == "终端字体" and n.get("role") in ("textField", "comboBox")), None))
         rpc("act", id=font["id"], action="setValue", text="Cascadia Mono")
         click("保存")
         wait_for(lambda: json.loads(settings.read_text(encoding="utf-8")).get("fontFamily") == "Cascadia Mono")

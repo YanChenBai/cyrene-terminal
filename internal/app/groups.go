@@ -185,9 +185,9 @@ func (a *application) groupEditorView(c *ui.Context) {
 			title = "编辑文件夹分组"
 		}
 		ui.Text(c, title).FontSize(20).Bold()
-		ui.TextInput(c.Key("group-name"), &a.groupName).Height(36).Width(432).Label("分组名称").Placeholder("名称").AutoFocus()
+		ui.TextInput(c.Key("group-name"), &a.groupName).Height(36).Radius(7).Width(432).Label("分组名称").Placeholder("名称").AutoFocus()
 		ui.Row(c).Gap(8).Children(func() {
-			ui.TextInput(c.Key("group-directory"), &a.groupDirectory).Height(36).Grow(1).MinWidth(0).Label("绑定目录").Placeholder("绑定目录")
+			ui.TextInput(c.Key("group-directory"), &a.groupDirectory).Height(36).Radius(7).Grow(1).MinWidth(0).Label("绑定目录").Placeholder("绑定目录")
 			textButton(c, "选择…").Label("选择绑定目录").Disabled(a.groupPicking || a.settingsBusy).OnClick(a.chooseGroupDirectory)
 		})
 		ui.Text(c, "在此分组下新建的终端会自动进入该目录。").FontSize(12).TextColor(c.Theme().TextMuted)

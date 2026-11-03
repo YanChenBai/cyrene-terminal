@@ -50,8 +50,8 @@ func TestDialogOriginOvershootDismissalAndFocus(t *testing.T) {
 	}
 	saveInteractionFrame(t, tt, "dialog-expanding")
 	tt.Advance(130 * time.Millisecond)
-	if math.Abs(float64(m.Scale-1.1)) > 0.015 {
-		t.Fatalf("expected 1.1 overshoot, got %v", m.Scale)
+	if m.Scale < .9 || m.Scale > 1.04 {
+		t.Fatalf("expected restrained opening, got %v", m.Scale)
 	}
 	saveInteractionFrame(t, tt, "dialog-overshoot")
 	tt.Advance(650 * time.Millisecond)
@@ -85,8 +85,8 @@ func TestPopoverBounceAndInterruptedExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	tt.Advance(90 * time.Millisecond)
-	if math.Abs(float64(a.launcherMotion.Scale-1.1)) > 0.035 {
-		t.Fatal("popover must reach 1.1")
+	if a.launcherMotion.Scale < .85 || a.launcherMotion.Scale > 1.04 {
+		t.Fatal("popover opening must remain restrained")
 	}
 	saveInteractionFrame(t, tt, "menu-overshoot")
 	tt.Key(0, ui.KeyEscape)
@@ -201,7 +201,7 @@ func TestSpringPositionAndScaleMoveTogether(t *testing.T) {
 			t.Fatal("scale and travel must follow the same spring")
 		}
 	}
-	if peak < 1.08 || peak > 1.12 {
+	if peak < 1 || peak > 1.04 {
 		t.Fatalf("spring peak: %v", peak)
 	}
 }

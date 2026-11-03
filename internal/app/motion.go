@@ -9,7 +9,7 @@ import (
 )
 
 // Keep an overlay mounted through its exit. An interrupted animation starts
-// from its current pose and velocity, with an opening peaking near 1.1.
+// from its current pose and velocity, with an restrained opening overshoot.
 type overlayMotion struct {
 	Visible, Target                         bool
 	Started                                 time.Time
@@ -52,7 +52,7 @@ func (m *sidebarTransition) stepDuration(now time.Time, target, duration float32
 // Analytic damped spring: position and scale move continuously together,
 // retaining velocity when a gesture reverses instead of chaining two eases.
 func springPose(from, velocity, target, seconds float32) (float32, float32) {
-	const damping, frequency = 0.57, 21.0
+	const damping, frequency = 0.76, 19.0
 	b := damping * frequency
 	w := frequency * math.Sqrt(1-damping*damping)
 	x := float64(from - target)
@@ -67,7 +67,7 @@ func (m *overlayMotion) step(now time.Time, open bool, source ui.Rect, initial f
 	if open != m.Target {
 		if !m.Visible {
 			m.Scale, m.Opacity, m.Position = initial, 0, 0
-			m.ScaleVelocity, m.PositionVelocity = max(0, initial-0.12)*9.8, 0
+			m.ScaleVelocity, m.PositionVelocity = max(0, initial-0.12)*2.5, 0
 		}
 		m.FromScale, m.FromOpacity, m.FromPosition = m.Scale, m.Opacity, m.Position
 		m.FromScaleVelocity, m.FromPositionVelocity = m.ScaleVelocity, m.PositionVelocity
@@ -126,6 +126,13 @@ func (a *application) dialog(c *ui.Context, key string, open *bool, width float3
 			*open = false
 		}
 		back.Children(func() {
+			// Keep window movement inside the modal input scope. Native caption buttons
+			// remain owned by the OS on the right side of the custom title bar.
+			// Do not add OnClick/Focusable here: MyGo only starts native dragging
+			// when DragWindow is the target's sole interactive flag.
+			bar := c.TitleBar()
+			ui.Box(c.Key(key + "-window-drag")).Absolute().Left(0).Top(0).Right(bar.Right).Height(max(32, bar.Height)).DragWindow().Label("拖动窗口")
+
 			ui.Column(c.Key(key+"-panel")).Role(ui.RoleDialog).Width(width).MaxWidth(w-32).Padding(20).Radius(14).Gap(12).
 				Material(glass.Glass{Clarity: 0.25}).Border(1, ui.RGBA(255, 255, 255, 0.1)).
 				Opacity(m.Opacity).TransformOrigin(0.5, 0.5).

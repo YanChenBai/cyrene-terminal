@@ -56,7 +56,10 @@ func softButton(c *ui.Context, label string) ui.Element {
 	if b.Pressed() {
 		alpha = 0.13
 	}
-	alpha = b.Animate("hover", alpha, 150*time.Millisecond)
+	if !b.Pressed() {
+		alpha = b.Animate("hover", alpha, 150*time.Millisecond)
+	}
+	pressFeedback(b)
 	return b.Background(ui.RGBA(230, 232, 240, alpha))
 }
 
@@ -77,6 +80,7 @@ func dialogButton(c *ui.Context, label string, primary bool) ui.Element {
 	} else {
 		b.Background(ui.RGBA(230, 235, 245, .055)).Border(1, ui.RGBA(230, 235, 245, .12))
 	}
+	pressFeedback(b)
 	return b.Children(func() { ui.Text(c, label).FontSize(12).Bold() })
 }
 
@@ -159,6 +163,7 @@ func (a *application) view(c *ui.Context) {
 	a.groupEditorView(c)
 	a.settingsView(c)
 	a.confirmations(c)
+	a.aliasEditorView(c)
 }
 
 func (a *application) cycleTab(direction int) {
@@ -201,10 +206,20 @@ func (a *application) titlebar(c *ui.Context, width float32) {
 		if t := a.work.active(); t != nil {
 			title = t.label()
 		}
-		ui.Text(c, title).FontSize(12).TextColor(c.Theme().TextMuted).Margin(0, 0, 0, 16).Grow(1).MinWidth(0).SingleLine().Clip()
+		// Directory updates may arrive without an OSC title event.
+		windowTitle := title
+		if windowTitle == "" {
+			windowTitle = "Cyrene Terminal"
+		}
+		if a.win != nil && a.windowTitle != windowTitle {
+			a.windowTitle = windowTitle
+			a.win.SetTitle(windowTitle)
+		}
+		ui.Text(c, title).FontSize(12).TextColor(c.Theme().TextMuted).Margin(0, 0, 0, 16*a.sidebarMotion.Value).Grow(1).MinWidth(0).SingleLine().Clip()
 		iconButton(c.Key("preferences-button"), settingsIcon, "外观设置").Bind(&a.preferencesHandle).OnClick(func() {
 			a.modalOrigin = a.preferencesHandle.Bounds(c)
 			a.draft, a.preferences, a.preferencesError = a.config, true, ""
+			a.loadFonts()
 		})
 	})
 }
@@ -240,6 +255,7 @@ func (a *application) tabRow(c *ui.Context, t *tab, width float32, index int) {
 	if row.Hovered() {
 		alpha += 0.045
 	}
+	hovered := row.Hovered() || t.Close.Focused(c)
 	row.Background(ui.RGBA(240, 242, 250, row.Animate("hover", alpha, 160*time.Millisecond))).Children(func() {
 		b := ui.ButtonBase(c.Key(fmt.Sprintf("tab-%d", t.ID))).Label(t.label()).Bind(&t.Select).Clip().FocusRing(false).Grow(1).MinWidth(0).Height(42).Padding(5, 7).Justify(ui.Start).
 			OnClick(func() { a.selectTab(t) })
@@ -249,22 +265,38 @@ func (a *application) tabRow(c *ui.Context, t *tab, width float32, index int) {
 					ui.Text(c, t.label()).FontSize(13).SingleLine().Clip()
 					path := ""
 					if n := t.Root.find(t.Focused); n != nil {
-						path = shortDirectory(n.Pane.Dir)
+						path = shortDirectory(n.Pane.directory())
 					}
 					ui.Text(c, path).FontSize(10).SingleLine().Clip().TextColor(c.Theme().TextMuted)
 				})
 			})
 		})
+		pressFeedback(b)
 		b.ContextMenu(func(m *ui.Menu) {
+			if m.Item("设置别名…").Chosen() {
+				a.aliasTarget = t
+				a.aliasDraft = t.Alias
+				a.aliasEditor = true
+				a.modalOrigin = t.Select.Bounds(c)
+			}
+			if m.Item("重新启动").Disabled(nStarting(t)).Chosen() {
+				if n := t.Root.find(t.Focused); n != nil {
+					a.restartPane(n.Pane)
+				}
+			}
 			if m.Item("关闭终端…").Chosen() {
 				a.requestStop(t, t.Select.Bounds(c))
 			}
 		})
-		ui.ButtonBase(c.Key("close")).Label(fmt.Sprintf("关闭终端 %d", t.ID)).Bind(&t.Close).Size(24, 24).Padding(5).FocusRing(false).Children(func() {
-			ui.Icon(c, closeIcon).Size(14, 14)
+		closeButton := ui.ButtonBase(c.Key("close")).Label(fmt.Sprintf("关闭终端 %d", t.ID)).Bind(&t.Close).Size(24, 24).Padding(5).FocusRing(false).Children(func() {
+			icon := ui.Icon(c, closeIcon).Size(14, 14)
+			if !hovered {
+				icon.Opacity(0)
+			}
 		}).OnClick(func() {
 			a.requestStop(t, t.Close.Bounds(c))
 		})
+		pressFeedback(closeButton)
 	})
 }
 
@@ -297,9 +329,15 @@ func (a *application) groupView(c *ui.Context, g folderGroup, width float32) {
 	}
 	fullHeight := max(0, float32(count*48-4))
 	ui.Column(c.Key("group-" + g.ID)).Width(width).Gap(2 * reveal).Children(func() {
-		ui.Row(c).Height(30).AlignItems(ui.Center).Children(func() {
-			b := softButton(c, "分组 "+g.Name).Bind(&state.Header).Grow(1).MinWidth(0).Justify(ui.Start).Padding(5, 6).Gap(7).
+		header := ui.Row(c.Key("group-header")).Height(30).Radius(7).Clip().Padding(0, 2, 0, 0).AlignItems(ui.Center)
+		alpha := float32(0)
+		if header.Hovered() {
+			alpha = .075
+		}
+		header.Background(ui.RGBA(230, 232, 240, header.Animate("hover", alpha, 150*time.Millisecond))).Children(func() {
+			b := ui.ButtonBase(c).Label("分组 "+g.Name).Height(26).Radius(7).FocusRing(false).Bind(&state.Header).Grow(1).MinWidth(0).Justify(ui.Start).Padding(5, 6).Gap(7).
 				Tooltip(g.Directory).OnClick(func() { state.Folded = !state.Folded })
+			pressFeedback(b)
 			b.Children(func() {
 				icon := ui.Icon(c, chevronIcon).Size(11, 11)
 				icon.Rotate(90 * reveal)
@@ -314,7 +352,10 @@ func (a *application) groupView(c *ui.Context, g folderGroup, width float32) {
 					a.removeGroup(g.ID)
 				}
 			})
-			iconButton(c, plusIcon, "在 "+g.Name+" 新建终端").Bind(&state.Add).OnClick(func() { a.openLauncher(g.ID) })
+			add := ui.ButtonBase(c.Key("group-add")).Label("在 "+g.Name+" 新建终端").Tooltip("在 "+g.Name+" 新建终端").Bind(&state.Add).
+				Size(26, 26).Padding(5).FocusRing(false).Children(func() { ui.Icon(c, plusIcon).Size(15, 15) }).
+				OnClick(func() { a.openLauncher(g.ID) })
+			pressFeedback(add)
 		})
 		if reveal > 0 && count > 0 {
 			ui.Box(c.Key("group-reveal")).Width(width).Height(fullHeight * reveal).Clip().IgnoreInput(state.Folded).Children(func() {
@@ -338,7 +379,20 @@ func (a *application) groupView(c *ui.Context, g folderGroup, width float32) {
 
 func (a *application) terminalView(c *ui.Context, p *pane) {
 	if p.Term != nil {
-		terminal.View(c.Key(p.ID), p.Term).Grow(1).MinHeight(0).Bind(&p.Handle).AutoFocus().Description(acceptanceTerminalDescription(p.Term))
+		ui.Box(c.Key("terminal-surface")).Grow(1).MinHeight(0).Clip().Children(func() {
+			terminal.View(c.Key(p.ID), p.Term).Grow(1).MinHeight(0).Bind(&p.Handle).AutoFocus().Description(acceptanceTerminalDescription(p.Term))
+			select {
+			case <-p.Term.Done():
+				ui.Row(c.Key("restart-position")).Absolute().Left(16).Right(16).Bottom(20).Justify(ui.Center).Children(func() {
+					ui.Row(c.Key("restart-bar")).Padding(8, 12).Gap(16).AlignItems(ui.Center).Radius(12).
+						Material(glass.Glass{Clarity: .35}).Background(ui.RGBA(20, 23, 28, .82)).Border(1, ui.RGBA(255, 255, 255, .12)).Children(func() {
+						ui.Text(c, fmt.Sprintf("进程已结束 · 退出码 %d", p.Term.ExitCode())).FontSize(12).TextColor(c.Theme().TextMuted)
+						dialogButton(c, "重新启动", true).Height(30).MinWidth(86).Padding(5, 12).Disabled(p.Starting).OnClick(func() { a.restartPane(p) })
+					})
+				})
+			default:
+			}
+		})
 		return
 	}
 	ui.Column(c.Key(p.ID)).Grow(1).Padding(16).Gap(10).Children(func() {
@@ -382,16 +436,26 @@ func (a *application) launcherView(c *ui.Context) {
 		return
 	}
 	m := &a.launcherMotion
-	if m.step(c.Now(), a.launcher, ui.Rect{}, 0.82) {
+	if m.step(c.Now(), a.launcher, anchor.Bounds(), 0.82) {
 		c.AnimationFrame()
 	}
 	visible := m.Visible
 	ui.PopoverBase(c.Key("launcher"), anchor, &visible, func(panel ui.Element) {
+		pivotX, pivotY := min(float32(1), max(float32(0), m.Source.W/2/236)), float32(0)
+		bounds := panel.Bounds()
+		if bounds.W > 0 && bounds.H > 0 {
+			pivotX = (m.Source.X + m.Source.W/2 - bounds.X) / bounds.W
+			pivotY = (m.Source.Y + m.Source.H/2 - bounds.Y) / bounds.H
+		}
 		panel.Width(236).Padding(6).Gap(3).Radius(12).Margin(5, 0, 0, 0).
 			Material(glass.Glass{Clarity: 0.25}).Border(1, ui.RGBA(255, 255, 255, 0.1)).
-			Opacity(m.Opacity).TransformOrigin(0.08, 0).
-			Transform(ui.Scaling(m.Scale, m.Scale).Then(ui.Translation(0, -10*(1-m.Position)))).Disabled(!m.Target)
-		ui.Text(c, shortDirectory(a.directoryForGroup(a.launchGroup))).FontSize(10).TextColor(c.Theme().TextMuted).Padding(6, 8).SingleLine().Clip()
+			Opacity(m.Opacity).TransformOrigin(pivotX, pivotY).
+			Transform(ui.Scaling(m.Scale, m.Scale).Then(ui.Translation(0, -5*(1-m.Position)))).Disabled(!m.Target)
+		directoryLabel := "工作目录：" + shortDirectory(a.directoryForGroup(a.launchGroup))
+		if a.launchGroup == "" {
+			directoryLabel = "工作目录：用户主目录"
+		}
+		ui.Text(c, directoryLabel).FontSize(10).TextColor(c.Theme().TextMuted).Padding(6, 8).SingleLine().Clip()
 		_, h := c.Size()
 		ui.Scroll(c).MaxHeight(max(100, h-120)).Children(func() {
 			ui.Column(c).Gap(2).Children(func() {
@@ -412,4 +476,54 @@ func (a *application) launcherView(c *ui.Context) {
 		a.launcher = false
 		c.AnimationFrame()
 	}
+}
+
+func pressFeedback(b ui.Element) {
+	scale := float32(1)
+	if b.Pressed() {
+		scale = .95
+	}
+	b.Scale(scale, scale)
+}
+func nStarting(t *tab) bool {
+	for _, p := range t.Root.leaves() {
+		if p.Starting {
+			return true
+		}
+	}
+	return false
+}
+func (a *application) restartPane(p *pane) {
+	if p.Starting {
+		return
+	}
+	if term := p.Term; term != nil {
+		p.Dir = p.directory()
+		a.sessionsMu.Lock()
+		delete(a.sessions, term)
+		a.sessionsMu.Unlock()
+		p.Term = nil
+		go term.Close()
+	}
+	if a.start != nil {
+		a.start(p)
+	}
+}
+func (a *application) aliasEditorView(c *ui.Context) {
+	a.dialog(c, "session-alias", &a.aliasEditor, 420, func() {
+		ui.Text(c, "会话别名").FontSize(20).Bold()
+		ui.TextInput(c.Key("session-alias-input"), &a.aliasDraft).Height(36).Radius(7).Label("会话别名").Placeholder("留空使用当前文件夹名").AutoFocus()
+		ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+			dialogButton(c, "取消", false).OnClick(func() { a.aliasEditor = false })
+			dialogButton(c, "保存", true).OnClick(func() {
+				if a.aliasTarget != nil {
+					a.aliasTarget.Alias = strings.TrimSpace(a.aliasDraft)
+					if a.win != nil && a.work.active() == a.aliasTarget {
+						a.win.SetTitle(a.aliasTarget.label())
+					}
+				}
+				a.aliasEditor = false
+			})
+		})
+	})
 }

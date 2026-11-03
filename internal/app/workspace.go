@@ -2,6 +2,7 @@ package app
 
 import (
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -75,6 +76,7 @@ func (n *layout) remove(id int) *layout {
 type tab struct {
 	ID      int
 	Name    string
+	Alias   string
 	Root    *layout
 	Focused int
 	GroupID string
@@ -131,13 +133,50 @@ func (t *tab) label() string {
 	if t == nil {
 		return ""
 	}
+	if alias := strings.TrimSpace(t.Alias); alias != "" {
+		return alias
+	}
 	if n := t.Root.find(t.Focused); n != nil {
+		if dir := strings.TrimSpace(n.Pane.directory()); dir != "" {
+			return filepath.Base(filepath.Clean(dir))
+		}
 		if n.Pane.Term != nil {
 			if title := strings.TrimSpace(n.Pane.Term.Title()); title != "" {
-				return title
+				return displayTitle(title)
 			}
 		}
-		return filepath.Base(n.Pane.Dir)
+		return "终端"
 	}
 	return "终端"
+}
+
+func displayTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if strings.ContainsAny(title, `/\\`) && strings.HasSuffix(strings.ToLower(title), ".exe") {
+		name := filepath.Base(strings.ReplaceAll(title, `\`, "/"))
+		name = name[:len(name)-4]
+		switch strings.ToLower(name) {
+		case "pwsh", "powershell":
+			return "PowerShell"
+		case "cmd":
+			return "Command Prompt"
+		}
+		return name
+	}
+	return title
+}
+
+func (p *pane) directory() string {
+	if p.Term != nil {
+		if dir := strings.TrimSpace(p.Term.Dir()); dir != "" {
+			if runtime.GOOS == "windows" {
+				if len(dir) > 3 && dir[0] == '/' && dir[2] == ':' {
+					dir = dir[1:]
+				}
+				dir = filepath.FromSlash(dir)
+			}
+			return dir
+		}
+	}
+	return p.Dir
 }

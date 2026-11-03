@@ -18,6 +18,13 @@ import (
 )
 
 type application struct {
+	windowTitle       string
+	fontNames         []string
+	fontsLoading      bool
+	fontsLoaded       bool
+	aliasEditor       bool
+	aliasTarget       *tab
+	aliasDraft        string
 	work              workspace
 	config            settings
 	draft             settings
@@ -122,6 +129,9 @@ func shellCommandInEnvironment(command []string, env []string) ([]string, error)
 		if runtime.GOOS == "windows" {
 			for _, name := range []string{"pwsh.exe", "powershell.exe", "cmd.exe"} {
 				if path, err := resolveExecutable(name, env); err == nil {
+					if name != "cmd.exe" {
+						return []string{path, "-NoLogo", "-NoExit", "-Command", powerShellDirectoryIntegration}, nil
+					}
 					return []string{path}, nil
 				}
 			}
@@ -152,6 +162,9 @@ func shellCommandInEnvironment(command []string, env []string) ([]string, error)
 }
 
 func (a *application) startPane(p *pane) {
+	if p.Starting {
+		return
+	}
 	p.Starting, p.Error = true, ""
 	conf, win, dir, command := a.config, a.win, p.Dir, slices.Clone(p.Profile.Command)
 	go func() {
@@ -175,7 +188,7 @@ func (a *application) startPane(p *pane) {
 				OnTitle: func(title string) {
 					win.Update(func() {
 						if t := a.work.active(); t != nil && t.Focused == p.ID {
-							win.SetTitle(title)
+							win.SetTitle(t.label())
 						}
 					})
 				},
@@ -195,6 +208,11 @@ func (a *application) startPane(p *pane) {
 		win.Update(func() {
 			p.Starting = false
 			p.Term = term
+			if term != nil {
+				if t := a.work.active(); t != nil && t.Focused == p.ID {
+					p.Handle.Focus()
+				}
+			}
 			if err != nil {
 				p.Error = err.Error()
 			}
