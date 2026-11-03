@@ -18,6 +18,7 @@ import (
 )
 
 type application struct {
+	inspector         inspectorState
 	windowTitle       string
 	fontNames         []string
 	fontsLoading      bool

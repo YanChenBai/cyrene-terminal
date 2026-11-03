@@ -12,8 +12,8 @@ func (a *application) settingsView(c *ui.Context) {
 	a.dialog(c, "preferences", &a.preferences, 520, func() {
 		_, viewportHeight := c.Size()
 		ui.Text(c, "外观设置").FontSize(22).Bold()
-		ui.Scroll(c).MaxHeight(min(430, max(100, viewportHeight-220))).Children(func() {
-			ui.Column(c).Gap(8).Grow(1).MinWidth(0).Children(func() {
+		ui.Scroll(c.Key("appearance-scroll")).ScrollbarInsets(2, 0, 2, 0).MaxHeight(min(430, max(100, viewportHeight-220))).Children(func() {
+			ui.Column(c).Gap(8).Padding(0, 14, 2, 0).Grow(1).MinWidth(0).Children(func() {
 				ui.Text(c, "字体").TextColor(c.Theme().TextMuted)
 				a.fontPicker(c)
 				a.numberSetting(c, "字体大小", &a.draft.FontSize, 8, 36)

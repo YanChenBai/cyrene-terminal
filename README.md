@@ -16,6 +16,17 @@
 
 当前采用单终端视图，不提供分屏。会话进程仅在应用运行期间保留，退出应用或重启系统后不会恢复进程。
 
+## 文件树侧栏
+
+右侧栏默认收起，点击设置按钮旁的开关展开只读文件树；顶级目录默认展开，子目录点击后展开。侧栏跟随当前会话工作目录，目录在前、文件在后；展开时按需在后台读取，支持点击刷新。
+
+- 使用 MyGo 原生 `CollapsibleBase` 展开 / 收起目录，带内容高度动画和旋转箭头；支持 Enter、Space 与左右方向键。
+- 点击文件仅选中，不打开文件，不编辑或写入磁盘。符号链接不自动递归，避免循环；单层最多显示 2000 项。
+- 复用 vscode-icons 的彩色 SVG，按文件名、扩展名和目录名匹配，并区分目录展开 / 收起图标。资源来源、固定版本及 CC BY-SA 许可见 [图标说明](assets/file-icons/README.md)。
+- 侧栏背景与左侧统一，没有分隔线；保留完整折叠动画。长目录支持滚轮、触控板和滚动条；拖动侧栏左边缘调整宽度，收起再展开保留宽度。
+
+当前不包含 Git 面板或差异预览。
+
 ## 开发与构建
 
 需要 **Go 1.27.3 或更高版本**。当前主要验证平台为 Windows amd64；其他桌面平台尚未完成实机验收。MyGo 固定版本及工具声明见 `go.mod`。
@@ -107,6 +118,6 @@ python scripts/native-smoke.py
 
 ## 许可证
 
-项目代码采用 [MIT](LICENSE)。第三方组件保留各自许可证；agent 标识的来源与许可见 [assets/agents/README.md](assets/agents/README.md)。随 Windows 包分发的 Chafa 是独立程序，采用 LGPL-3.0-or-later，其许可与对应源码地址保存在 [resources/windows-amd64/tools/chafa](resources/windows-amd64/tools/chafa)。项目 MIT 许可不改变这些组件的许可证或商标权利。
+项目代码采用 [MIT](LICENSE)。第三方组件保留各自许可证；文件图标使用 [vscode-icons](assets/file-icons/README.md) 的 CC BY-SA 原始资源，品牌标识保留各自权利；agent 标识的来源与许可见 [assets/agents/README.md](assets/agents/README.md)。随 Windows 包分发的 Chafa 是独立程序，采用 LGPL-3.0-or-later，其许可与对应源码地址保存在 [resources/windows-amd64/tools/chafa](resources/windows-amd64/tools/chafa)。项目 MIT 许可不改变这些组件的许可证或商标权利。
 
 项目地址：[YanChenBai/cyrene-terminal](https://github.com/YanChenBai/cyrene-terminal) · [MyGo 文档](https://mygo.egoist.dev/docs)

@@ -118,7 +118,11 @@ func (a *application) view(c *ui.Context) {
 	if a.sidebarWidth <= 0 {
 		a.sidebarWidth = 244
 	}
-	a.sidebarWidth = min(a.sidebarWidth, max(200, viewportWidth-360))
+	reserve := float32(360)
+	if a.inspector.Open {
+		reserve = 460
+	}
+	a.sidebarWidth = min(a.sidebarWidth, max(200, viewportWidth-reserve))
 	target := float32(1)
 	if a.collapsed {
 		target = 0
@@ -129,6 +133,8 @@ func (a *application) view(c *ui.Context) {
 		c.AnimationFrame()
 	}
 	width := a.sidebarWidth * a.sidebarMotion.Value
+	rightWidth := a.prepareInspector(c)
+	ui.Box(c.Key("right-sidebar-surface")).Absolute().Right(0).Top(0).Bottom(0).Width(rightWidth).Background(ui.RGBA(0, 0, 0, .12)).PassThrough()
 	// One uninterrupted surface extends behind the title bar and the tab list.
 	ui.Box(c.Key("sidebar-surface")).Absolute().Left(0).Top(0).Bottom(0).Width(width).
 		Background(ui.RGBA(0, 0, 0, 0.12)).PassThrough()
@@ -148,16 +154,31 @@ func (a *application) view(c *ui.Context) {
 					ui.Text(c, a.status).FontSize(11).Padding(8).TextColor(c.Theme().TextMuted).Wrap()
 				}
 			})
+			a.inspectorView(c)
 		})
 	})
 	if !a.collapsed {
+		leftLimit := max(float32(200), min(float32(520), viewportWidth-max(float32(360), rightWidth+240)))
 		grip := ui.Box(c.Key("sidebar-resize")).Absolute().Left(width - 3).Top(32).Bottom(0).Width(6).
 			Cursor(ui.CursorResizeEW).Label("调整侧栏宽度").Focusable()
 		if dx, _, held := grip.Dragged(); held && dx != 0 {
-			a.sidebarWidth = min(max(a.sidebarWidth+dx, 200), min(520, viewportWidth-360))
+			a.sidebarWidth = min(max(a.sidebarWidth+dx, 200), leftLimit)
 		}
 		grip.OnShortcut(0, ui.KeyLeft, func() { a.sidebarWidth = max(200, a.sidebarWidth-12) })
-		grip.OnShortcut(0, ui.KeyRight, func() { a.sidebarWidth = min(min(520, viewportWidth-360), a.sidebarWidth+12) })
+		grip.OnShortcut(0, ui.KeyRight, func() { a.sidebarWidth = min(leftLimit, a.sidebarWidth+12) })
+	}
+	if a.inspector.Open {
+		grip := ui.Box(c.Key("right-sidebar-resize")).Absolute().Left(viewportWidth - rightWidth - 3).Top(32).Bottom(0).Width(6).
+			Cursor(ui.CursorResizeEW).Label("调整右侧栏宽度").Focusable()
+		resize := func(delta float32) {
+			limit := max(float32(220), min(float32(520), viewportWidth-width-240))
+			a.inspector.Width = min(max(a.inspectorWidth(c)+delta, 220), limit)
+		}
+		if dx, _, held := grip.Dragged(); held && dx != 0 {
+			resize(-dx)
+		}
+		grip.OnShortcut(0, ui.KeyLeft, func() { resize(12) })
+		grip.OnShortcut(0, ui.KeyRight, func() { resize(-12) })
 	}
 	a.launcherView(c)
 	a.groupEditorView(c)
@@ -221,6 +242,7 @@ func (a *application) titlebar(c *ui.Context, width float32) {
 			a.draft, a.preferences, a.preferencesError = a.config, true, ""
 			a.loadFonts()
 		})
+		iconButton(c.Key("right-sidebar-toggle"), rightPanelIcon, "切换右侧栏").OnClick(func() { a.inspector.Open = !a.inspector.Open })
 	})
 }
 

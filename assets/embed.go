@@ -4,7 +4,7 @@ package assets
 import "embed"
 
 // FS holds the original agent marks. Attribution is in agents/README.md.
-//go:embed agents/*.svg
+//go:embed agents/*.svg file-icons/*.svg
 var FS embed.FS
 
 // TrayIcon is generated from cyrene.svg by go run ./scripts/render-icon.

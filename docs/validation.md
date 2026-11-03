@@ -39,3 +39,18 @@ Windows 本地 ConPTY 尚未完成 Kitty 图形序列透传；Yazi 使用 Chafa 
 ## Windows 失焦背景
 
 暂保留 MyGo 默认行为，不启用窗口子类兼容适配。MyGo v0.7.4 的 SetActiveAppearance 在 Windows 后端为空操作；失焦背景效果留待后续处理。
+
+## 只读文件树侧栏（2026-11-04）
+
+Git 面板、Git 操作与提交图实现已按当前范围移除。右侧栏改为 MyGo 原生 CollapsibleBase 组成的文件树，目录优先排序、展开时后台读取。文件仅可选中；无打开、编辑或写入动作。符号链接不递归，单层最多显示 2000 项。
+
+图标复用固定版本 vscode-icons 的原始 SVG，来源与 CC BY-SA 声明位于 assets/file-icons/README.md。测试覆盖目录排序、图标映射、文件选中、目录关闭后后代隐藏、重新展开以及侧栏完全收起。
+
+原生 Windows 窗口验收已通过右侧栏开关、目录按需读取、文件只读选中、目录折叠和刷新；结果位于忽略的 test-results/file-tree-native.json，截图为 file-tree-native.png。Go 全部测试、MyGo vet 和 Windows 发布构建通过。
+
+
+### 文件树滚动与调宽
+
+修正右侧栏外层与内容列的高度约束，滚动范围限制在标题和目录路径下方。右侧左边缘提供无分隔线的 6 DIP 拖拽区域，支持方向键微调，收起再展开保留宽度；两侧同时展开时为终端保留可用空间。
+
+120 文件目录回归测试覆盖滚轮与精确滚动到末尾；另有拖拽调宽与收起后宽度保留测试。隔离原生 Windows 窗口验证滚轮到末尾、边缘拖拽与宽度保留均通过，记录见 test-results/file-tree-native.json，截图为 file-tree-scroll-native.png。Go 全部测试、MyGo vet 通过。
