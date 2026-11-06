@@ -1,7 +1,6 @@
 package app
 
 import (
-	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 	"strings"
 )
@@ -25,7 +24,7 @@ func (a *application) fontPicker(c *ui.Context) {
 	cb := ui.ComboboxBase(c.Key("font"), &a.draft.FontFamily)
 	cb.Input.Height(36).Radius(7).Padding(7, 10).Background(ui.RGBA(230, 235, 245, .055)).Border(1, ui.RGBA(230, 235, 245, .18)).Label("终端字体")
 	cb.Popup(func(panel ui.Element) {
-		panel.Padding(5).Radius(10).Material(glass.Glass{Clarity: .3}).Border(1, ui.RGBA(255, 255, 255, .12))
+		panel.Padding(5).Radius(10).Material(frostedOverlay{Clarity: .3}).Border(1, ui.RGBA(255, 255, 255, .12))
 		ui.Scroll(c).MaxHeight(220).Children(func() {
 			ui.Column(c).Children(func() {
 				count := 0

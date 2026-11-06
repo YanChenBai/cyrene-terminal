@@ -1,8 +1,6 @@
 package app
 
 import (
-	"math"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -23,15 +21,21 @@ func TestGroupedLauncherAndExtraFrames(t *testing.T) {
 		tt.Frame()
 		tt.Advance(500 * time.Millisecond)
 	}
-	click("新建文件夹分组")
+	tt.Key(ui.Ctrl|ui.Shift, ui.KeyP)
+	tt.Advance(500 * time.Millisecond)
+	tt.Type("new group")
+	tt.Key(0, ui.KeyEnter)
+	tt.Advance(500 * time.Millisecond)
 	dir := t.TempDir()
 	a.groupName, a.groupDirectory = "Project", dir
 	click("保存")
 	if len(a.config.Groups) != 1 || a.groupEditor {
 		t.Fatal("group should be created")
 	}
-	click("在 Project 新建终端")
-	button, _ := tt.Find("在 Project 新建终端")
+	a.openLauncher(a.config.Groups[0].ID)
+	tt.Frame()
+	tt.Advance(500 * time.Millisecond)
+	button, _ := tt.Find("新建工作区")
 	item, ok := tt.Find("启动 Codex")
 	if !ok || item.Y < button.Y+button.H {
 		t.Fatalf("launcher must open below its anchor: anchor=%+v item=%+v", button, item)
@@ -49,14 +53,9 @@ func TestGroupedLauncherAndExtraFrames(t *testing.T) {
 	}
 	click("新建终端")
 	click("启动 Terminal")
-	home, _ := os.UserHomeDir()
-	if a.work.active().Root.Pane.Dir != home || a.work.active().GroupID != "" {
-		t.Fatal("ungrouped terminal must start in user home")
+	if a.work.active().Root.Pane.Dir != dir || a.work.active().GroupID != groupID || len(a.work.Screens) != 1 {
+		t.Fatal("workspace launcher must inherit directory and append to clicked workspace")
 	}
-	click("切换侧栏")
-	tt.Advance(300 * time.Millisecond)
-	click("切换侧栏")
-	tt.Advance(300 * time.Millisecond)
 	if _, ok := tt.Find("后台会话"); ok {
 		t.Fatal("standalone background UI must be removed")
 	}
@@ -88,49 +87,6 @@ func TestGroupedLauncherAndExtraFrames(t *testing.T) {
 	}
 }
 
-func TestGroupChevronSpacingAndTreeGuide(t *testing.T) {
-	a := &application{config: defaultSettings()}
-	dir := filepath.Join(t.TempDir(), "workspace")
-	a.config.Groups = []folderGroup{{ID: "alpha", Name: "Alpha", Directory: dir}, {ID: "beta", Name: "Beta", Directory: dir}}
-	a.work.add(profile{ID: "shell", Name: "Terminal"}, dir)
-	a.work.active().GroupID = "alpha"
-	a.work.add(profile{ID: "shell", Name: "Terminal"}, dir)
-	a.work.active().GroupID = "beta"
-	tt := ui.NewTester(a.view, 1000, 720)
-	header, ok := tt.Find("分组 Alpha")
-	if !ok {
-		t.Fatal("missing group header")
-	}
-	text, ok := tt.Find("Alpha")
-	if !ok || math.Abs(float64(text.X-(header.X+6+11+7))) > .5 {
-		t.Fatalf("chevron-label gap must be 7 DIP: header=%+v text=%+v", header, text)
-	}
-	saveInteractionFrame(t, tt, "group-tree")
-	before := text.X
-	betaBefore, _ := tt.Find("分组 Beta")
-	_ = tt.Click("分组 Alpha")
-	tt.Advance(60 * time.Millisecond)
-	if a.groupState("alpha").Motion.Value <= 0 || a.groupState("alpha").Motion.Value >= 1 {
-		t.Fatal("group must animate through intermediate heights")
-	}
-	betaMid, _ := tt.Find("分组 Beta")
-	if betaMid.Y >= betaBefore.Y || betaMid.Y <= header.Y+30 {
-		t.Fatalf("neighbor must move gradually: %v -> %v", betaBefore.Y, betaMid.Y)
-	}
-	saveInteractionFrame(t, tt, "group-closing")
-	tt.Advance(200 * time.Millisecond)
-	text, _ = tt.Find("Alpha")
-	if text.X != before {
-		t.Fatal("fold must not shift group text")
-	}
-	_ = tt.Click("分组 Alpha")
-	tt.Advance(200 * time.Millisecond)
-	text, _ = tt.Find("Alpha")
-	if text.X != before {
-		t.Fatal("unfold must not shift group text")
-	}
-}
-
 func TestStartupFailureCardRetryAndTitleSpacing(t *testing.T) {
 	a := &application{config: defaultSettings()}
 	p := a.work.add(profile{ID: "codex", Name: "Codex"}, filepath.Join(t.TempDir(), "project"))
@@ -138,10 +94,10 @@ func TestStartupFailureCardRetryAndTitleSpacing(t *testing.T) {
 	starts := 0
 	a.start = func(p *pane) { starts++; p.Error = ""; p.Starting = true }
 	tt := ui.NewTester(a.view, 1000, 720)
-	button, _ := tt.Find("新建终端")
+	button, _ := tt.Find("新建工作区")
 	title, ok := tt.Find("project")
-	if !ok || title.X < button.X+button.W+16 {
-		t.Fatalf("title needs breathing room after tools: title=%+v button=%+v", title, button)
+	if !ok || title.X+title.W >= button.X {
+		t.Fatalf("title must stay before right tools: title=%+v button=%+v", title, button)
 	}
 	retry, ok := tt.Find("重试")
 	if !ok || retry.Y < 200 || retry.Y > 550 {

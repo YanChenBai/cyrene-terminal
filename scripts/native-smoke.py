@@ -117,6 +117,8 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
     client = None
     serial = 0
     report = {}
+
+    clipboard_path = None
     try:
         client = subprocess.Popen(["go", "run", "./scripts/automation-client", env["MYGO_AUTOMATION"]],
                                   cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -147,11 +149,16 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
             (OUT / name).write_bytes(base64.b64decode(result["png"]))
             return result
 
-        def send_command(command):
+        def send_command(command, pane_key=None):
             terminal = wait_for(lambda: next((n for n in tree() if n.get("label") == "Terminal" and "focus" in n.get("actions", [])
+                                               and (pane_key is None or n.get("key") == pane_key)
                                                and n.get("description", "").rstrip().endswith(">")), None))
             rpc("act", id=terminal["id"], action="focus")
-            time.sleep(0.1)
+            # Commit pointer focus before typing; a pending popover focus
+            # restoration can otherwise consume a command in an offscreen window.
+            bounds = terminal["bounds"]
+            rpc("input", events=[{"type": "click", "x": bounds["x"]+24, "y": bounds["y"]+24}])
+            time.sleep(0.2)
             rpc("input", events=[{"type": "text", "text": command}, {"type": "key", "key": "Enter"}])
 
         def wait_terminal(key):
@@ -166,6 +173,52 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         wait_for(home_marker.exists)
         assert Path(home_marker.read_text().strip()).samefile(Path.home())
         report["ungrouped_starts_in_user_home"] = True
+
+        # Optional native clipboard check. Hold a materialized clipboard backup
+        # in an STA process and restore it even when a terminal assertion fails.
+        if os.getenv("CYRENE_SMOKE_CLIPBOARD") == "1":
+            clipboard_script = r'''
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$backup = New-Object System.Windows.Forms.DataObject
+$old = [System.Windows.Forms.Clipboard]::GetDataObject()
+if ($null -ne $old) {
+    foreach ($format in $old.GetFormats($false)) {
+        $value = $old.GetData($format, $false)
+        if ($value -is [System.Drawing.Image]) { $value = $value.Clone() }
+        if ($null -ne $value) { $backup.SetData($format, $false, $value) }
+    }
+}
+try {
+    $image = New-Object System.Drawing.Bitmap 3, 2
+    $image.SetPixel(0, 0, [System.Drawing.Color]::Red)
+    [System.Windows.Forms.Clipboard]::SetImage($image)
+    [Console]::WriteLine('READY')
+    [Console]::ReadLine() | Out-Null
+} finally {
+    [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true)
+    $image.Dispose()
+}
+'''
+            encoded = base64.b64encode(clipboard_script.encode("utf-16-le")).decode()
+            holder = subprocess.Popen(["powershell.exe", "-NoLogo", "-NoProfile", "-STA", "-EncodedCommand", encoded],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                                      creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                assert holder.stdout.readline().strip() == b"READY"
+                paste_marker = tmp / "clipboard-path.txt"
+                send_command(f"$p = Read-Host 'CLIP_READY'; $p | Set-Content '{paste_marker}'")
+                wait_for(lambda: any("CLIP_READY" in n.get("description", "") for n in tree() if n.get("label") == "Terminal"))
+                rpc("input", events=[{"type": "key", "key": "Ctrl+V"}])
+                wait_for(lambda: any("cyrene-clipboard-" in n.get("description", "") for n in tree() if n.get("label") == "Terminal"))
+                rpc("input", events=[{"type": "key", "key": "Enter"}])
+                wait_for(paste_marker.exists)
+                clipboard_path = Path(paste_marker.read_text(encoding="utf-8-sig").strip().strip("'"))
+                assert clipboard_path.is_file(), clipboard_path
+                assert clipboard_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+                report["native_ctrl_v_screenshot_produces_readable_png"] = True
+            finally:
+                holder.communicate(input=b"\n", timeout=15)
 
         def set_field(label, text):
             node = wait_for(lambda: next((n for n in tree() if n.get("label") == label and n.get("role") in ("textField", "comboBox")), None))
@@ -184,6 +237,8 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         add_group("Beta", project_b)
         click("在 Alpha 新建终端")
         wait_for(lambda: any(n.get("label") == "启动 Terminal" for n in tree()))
+        assert not any(n.get("label", "").startswith("恢复 ") for n in tree()), "Plus launcher must only create sessions"
+        report["plus_launcher_only_creates_sessions"] = True
         capture("launcher.png")
         anchor = next(n for n in tree() if n.get("label") == "在 Alpha 新建终端")
         item = next(n for n in tree() if n.get("label") == "启动 Codex")
@@ -197,7 +252,8 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         send_command(command)
         wait_for(cwd_a.exists)
         assert Path(cwd_a.read_text().strip()).samefile(project_a)
-        wait_for(lambda: len([n for n in tree() if n.get("label") == "Project Alpha"]) >= 2)
+        wait_for(lambda: any(n.get("key")=="tab-5" and n.get("label")=="Project Alpha" for n in tree())
+                 and any(n.get("label")=="内容标签 5" and n.get("description")=="Project Alpha" for n in tree()))
         assert rpc("windows")["windows"][0]["title"] == "Project Alpha"
         report["terminal_osc_title_in_sidebar_header_and_window"] = True
         wait_for(marker.exists)
@@ -206,6 +262,11 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         rpc("act",key="tab-5",action="press")
         wait_terminal(4)
         report["tab_switch_keeps_sessions"] = True
+        click("内容标签 2")
+        wait_terminal(1)
+        click("内容标签 5")
+        wait_terminal(4)
+        report["center_tabs_reuse_terminal_sessions"] = True
         click("在 Beta 新建终端")
         click("启动 Terminal")
         wait_terminal(7)
@@ -223,12 +284,13 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         rpc("input",events=[{"type":"pointerUp","x":312,"y":500}])
         wait_for(lambda: any(n.get("label")=="Terminal" and n["bounds"]["x"]>300 for n in tree()))
         report["sidebar_native_edge_drag_resizes"] = True
-        wait_for(lambda: len([n for n in tree() if n.get("label") == "Project Beta"]) >= 2)
+        wait_for(lambda: any(n.get("key")=="tab-8" and n.get("label")=="Project Beta" for n in tree())
+                 and any(n.get("label")=="内容标签 8" and n.get("description")=="Project Beta" for n in tree()))
         time.sleep(0.5)
         capture("workspace.png")
         assert not any(n.get("label") == "后台会话" for n in tree())
         report["no_independent_background_feature"] = True
-        click("关闭终端 8")
+        click("关闭内容标签 8")
         time.sleep(0.5)
         capture("close-confirmation.png")
         click("取消")
@@ -342,12 +404,148 @@ with tempfile.TemporaryDirectory(prefix="cyrene-smoke-") as tmp:
         wait_for(lambda: process_stopped(close_pid))
         assert len([n for n in tree() if str(n.get("key", "")).startswith("tab-")]) == 3
         report["close_tab_confirm_terminates_shell"] = True
+        if os.getenv("CYRENE_SMOKE_TILING") == "1":
+            def terminal_nodes():
+                return [n for n in tree() if n.get("label")=="Terminal" and "focus" in n.get("actions", [])]
+
+            def palette(query):
+                rpc("input", events=[{"type":"key", "key":"Ctrl+Shift+P"}])
+                wait_for(lambda:any(n.get("label")=="命令搜索" for n in tree()))
+                time.sleep(.4)
+                set_field("命令搜索",query)
+
+            rpc("act", key="tab-5", action="press")
+            wait_terminal(4)
+            send_command("Clear-Host; Write-Host 'Build workspace' -ForegroundColor Cyan; Write-Host 'Terminal stays running while layouts change.'",4)
+            wait_for(lambda: any("Build workspace" in n.get("description","") for n in terminal_nodes()))
+            tabs=[n for n in tree() if n.get("label","").startswith("内容标签 ")]
+            assert all(n["bounds"]["y"]+n["bounds"]["height"]<=32 for n in tabs),tabs
+            assert not any(n.get("label")=="添加内容标签" for n in tree())
+            rpc("input",events=[{"type":"pointerMove","x":600,"y":300}])
+            time.sleep(.25)
+            capture("tiling-01-titlebar.png")
+            source=next(n for n in tree() if n.get("key")=="tab-8")["bounds"]
+            target=next(n for n in terminal_nodes() if n.get("key")==4)["bounds"]
+            sx,sy=source["x"]+30,source["y"]+20
+            tx,ty=target["x"]+target["width"]-25,target["y"]+target["height"]*.5
+            rpc("input",events=[{"type":"pointerDown","x":sx,"y":sy}])
+            rpc("input",events=[{"type":"pointerMove","x":sx+12,"y":sy+3}])
+            rpc("input",events=[{"type":"pointerMove","x":tx,"y":ty}])
+            wait_for(lambda:any(n.get("label")=="向右分屏" for n in tree()))
+            time.sleep(.2)
+            capture("tiling-02-drop-preview.png")
+            rpc("input",events=[{"type":"pointerUp","x":tx,"y":ty}])
+            wait_for(lambda:len(terminal_nodes())==2)
+            assert {n["key"] for n in terminal_nodes()}=={4,7}
+            report["drag_across_groups_reuses_native_processes"]=True
+            time.sleep(.25)
+            divider=next(n for n in tree() if n.get("role")=="splitter")["bounds"]
+            dx,dy=divider["x"]+divider["width"]/2,divider["y"]+divider["height"]/2
+            before=next(n for n in terminal_nodes() if n["key"]==4)["bounds"]["width"]
+            rpc("input",events=[{"type":"pointerDown","x":dx,"y":dy}])
+            time.sleep(.08)
+            rpc("input",events=[{"type":"pointerMove","x":dx-75,"y":dy}])
+            time.sleep(.08)
+            rpc("input",events=[{"type":"pointerUp","x":dx-75,"y":dy}])
+            wait_for(lambda:next(n for n in terminal_nodes() if n["key"]==4)["bounds"]["width"]<before-30)
+            report["native_split_divider_resizes"]=True
+            pid_check=tmp/"alpha-pid-after-dock.txt"
+            send_command(f"$PID | Set-Content '{pid_check}'",4)
+            wait_for(pid_check.exists)
+            assert pid_check.read_text(encoding="utf-8-sig").strip()==(tmp/"shell-pid.txt").read_text(encoding="utf-8-sig").strip()
+            report["dock_preserves_original_shell_pid"]=True
+            click("窗格 7")
+            send_command("Clear-Host; Write-Host 'Review workspace' -ForegroundColor Green",7)
+            palette("")
+            capture("tiling-03-command-palette.png")
+            set_field("命令搜索","split down")
+            rpc("input",events=[{"type":"key","key":"Enter"}])
+            wait_for(lambda:any(n.get("label")=="命令 新建 Terminal" for n in tree()))
+            set_field("命令搜索","new Terminal")
+            rpc("input",events=[{"type":"key","key":"Enter"}])
+            wait_for(lambda:len(terminal_nodes())==3)
+            extra=next(n["key"] for n in terminal_nodes() if n["key"] not in (4,7))
+            cwd_check=tmp/"split-cwd.txt"
+            split_pid=tmp/"split-pid.txt"
+            send_command(f"$PID | Set-Content '{split_pid}'; (Get-Location).Path | Set-Content '{cwd_check}'; Clear-Host; Write-Host 'Project checks' -ForegroundColor Yellow",extra)
+            wait_for(cwd_check.exists)
+            assert Path(cwd_check.read_text().strip()).samefile(project_b)
+            report["keyboard_split_inherits_target_directory"]=True
+            time.sleep(.4)
+            capture("tiling-04-three-panes.png")
+            click(f"窗格 {extra}")
+            palette("rename tab")
+            rpc("input",events=[{"type":"key","key":"Enter"}])
+            set_field("标签名称","Project workspace")
+            click("保存")
+            wait_for(lambda:any(n.get("label","").startswith("内容标签 ") and n.get("description")=="Project workspace · 3" for n in tree()))
+            palette("rename session")
+            rpc("input",events=[{"type":"key","key":"Enter"}])
+            set_field("会话别名","Checks")
+            click("保存")
+            assert len([n for n in tree() if n.get("label")=="Checks" and str(n.get("key","")).startswith("tab-")])==1
+            assert any(n.get("key")=="tab-5" and n.get("label")=="Project Alpha" for n in tree())
+            assert any(n.get("key")=="tab-8" and n.get("label")=="Project Beta" for n in tree())
+            assert rpc("windows")["windows"][0]["title"]=="Project workspace · 3"
+            report["palette_renames_only_focused_tab_or_session"]=True
+            capture("tabs-08-compact-rounded.png")
+            palette("detach")
+            rpc("input",events=[{"type":"key","key":"Enter"}])
+            wait_for(lambda:len(terminal_nodes())==1 and terminal_nodes()[0]["key"]==extra)
+            report["keyboard_detach_keeps_terminal"]=True
+            capture("tiling-05-detached.png")
+            # Put the single Checks terminal back into the composite screen,
+            # then drag its pane title back to the tab strip and reorder it.
+            rpc("act",key="tab-8",action="press")
+            wait_for(lambda:len(terminal_nodes())==2)
+            checks_tab=next(n for n in tree() if n.get("label","").startswith("内容标签 ") and n.get("description")=="Checks")["bounds"]
+            beta=next(n for n in terminal_nodes() if n["key"]==7)["bounds"]
+            cx,cy=checks_tab["x"]+20,checks_tab["y"]+16
+            bx,by=beta["x"]+beta["width"]/2,beta["y"]+beta["height"]-20
+            rpc("input",events=[{"type":"pointerDown","x":cx,"y":cy}])
+            rpc("input",events=[{"type":"pointerMove","x":cx+10,"y":cy+4}])
+            rpc("input",events=[{"type":"pointerMove","x":bx,"y":by}])
+            time.sleep(.15)
+            rpc("input",events=[{"type":"pointerUp","x":bx,"y":by}])
+            wait_for(lambda:len(terminal_nodes())==3)
+            handle=next(n for n in tree() if n.get("label")==f"窗格 {extra}")["bounds"]
+            hx,hy=handle["x"]+25,handle["y"]+12
+            rpc("input",events=[{"type":"pointerDown","x":hx,"y":hy}])
+            rpc("input",events=[{"type":"pointerMove","x":hx+10,"y":hy+3}])
+            rpc("input",events=[{"type":"pointerMove","x":950,"y":16}])
+            time.sleep(.15)
+            rpc("input",events=[{"type":"pointerUp","x":950,"y":16}])
+            wait_for(lambda:len(terminal_nodes())==1 and terminal_nodes()[0]["key"]==extra)
+            report["drag_pane_back_to_tab_strip"]=True
+            tabs=sorted([n for n in tree() if n.get("label","").startswith("内容标签 ")],key=lambda n:n["bounds"]["x"])
+            moved=next(n for n in tabs if n.get("description")=="Checks")["bounds"]
+            first=tabs[0]["bounds"]
+            rpc("input",events=[{"type":"pointerDown","x":moved["x"]+20,"y":16}])
+            rpc("input",events=[{"type":"pointerMove","x":moved["x"]+10,"y":16}])
+            rpc("input",events=[{"type":"pointerMove","x":first["x"]+2,"y":16}])
+            time.sleep(.15)
+            rpc("input",events=[{"type":"pointerUp","x":first["x"]+2,"y":16}])
+            wait_for(lambda:sorted([n for n in tree() if n.get("label","").startswith("内容标签 ")],key=lambda n:n["bounds"]["x"])[0].get("description")=="Checks")
+            report["native_tab_drag_reorders_screens"]=True
+            after_pid=tmp/"split-pid-after-tab-drag.txt"
+            send_command(f"$PID | Set-Content '{after_pid}'",extra)
+            wait_for(after_pid.exists)
+            assert after_pid.read_text(encoding="utf-8-sig").strip()==split_pid.read_text(encoding="utf-8-sig").strip()
+            report["tab_drag_preserves_shell_pid"]=True
+            capture("tabs-09-compact-reordered.png")
+            rpc("input",events=[{"type":"key","key":"Ctrl+Shift+W"}])
+            click("终止进程")
+            wait_for(lambda:len([n for n in tree() if str(n.get("key", "")).startswith("tab-")])==3)
         if os.getenv("CYRENE_ACCEPTANCE_HOLD") == "1":
             (OUT / "acceptance-ready.json").write_text(json.dumps({"pid":proc.pid,"socket":env["MYGO_AUTOMATION"]}),encoding="utf-8")
             print("Native acceptance window is ready for visual inspection",flush=True)
             wait_for(lambda:(OUT / "acceptance-continue").exists(),timeout=240)
         rpc("menu",path=["退出应用"])
         assert proc.wait(timeout=15) == 0
+
+        if clipboard_path is not None:
+            assert not clipboard_path.exists(), "Clipboard image survived terminal shutdown"
+            report["clipboard_image_cleaned_on_quit"] = True
         report["explicit_quit"] = True
         kernel32 = ctypes.windll.kernel32
         kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_bool, ctypes.c_ulong]

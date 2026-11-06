@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -38,7 +39,7 @@ func TestKittyGraphicsDrawDeleteAndTabSwitch(t *testing.T) {
 		n := 0
 		img := tt.Image()
 		for y := 32; y < img.Bounds().Dy(); y++ {
-			for x := 244; x < img.Bounds().Dx(); x++ {
+			for x := 0; x < img.Bounds().Dx(); x++ {
 				if img.RGBAAt(x, y) == ink {
 					n++
 				}
@@ -56,6 +57,7 @@ func TestKittyGraphicsDrawDeleteAndTabSwitch(t *testing.T) {
 	saveInteractionFrame(t, tt, "kitty-graphics")
 	a.work.add(profile{ID: "shell"}, t.TempDir())
 	tt.Frame()
+	tt.Advance(300 * time.Millisecond)
 	if count() != 0 {
 		t.Fatal("image leaked into another tab")
 	}
@@ -65,6 +67,7 @@ func TestKittyGraphicsDrawDeleteAndTabSwitch(t *testing.T) {
 		}
 	}
 	tt.Frame()
+	tt.Advance(300 * time.Millisecond)
 	if count() < 1000 {
 		t.Fatal("image disappeared when returning to the original terminal")
 	}

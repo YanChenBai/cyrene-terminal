@@ -13,3 +13,5 @@ func acceptanceTerminalDescription(*terminal.Terminal) string { return "" }
 func configureAcceptance()                                                  {}
 func acceptanceWindowOptions(options mygo.WindowOptions) mygo.WindowOptions { return options }
 func showAcceptanceWindow(*mygo.Window)                                     {}
+
+func captureAcceptanceBrowser(*mygo.WebView, int) {}

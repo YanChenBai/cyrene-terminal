@@ -2,3 +2,7 @@
 *.ps1 text eol=crlf
 *.png binary
 *.exe binary
+
+# Preserve upstream formatting and unified-diff context verbatim.
+vendor/** -whitespace
+docs/patches/*.patch -whitespace

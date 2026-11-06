@@ -1,0 +1,106 @@
+--- a/internal/scene/effect.go
++++ b/internal/scene/effect.go
+@@ -33,6 +33,8 @@
+ // sampleBackdrop(e, q) (with the backdrop texture first in Metal) returns
+ // the backdrop at q, premultiplied, as BackdropImage.Sample does.
+ type Effect struct {
++	// ReplaceBackdrop replaces sampled content using shape coverage (CPU and D3D11).
++	ReplaceBackdrop bool
+ 	// Name names the effect in errors.
+ 	Name string
+ 	// Backdrop tells that the effect reads its backdrop.
+--- a/internal/raster/effect.go
++++ b/internal/raster/effect.go
+@@ -234,7 +234,11 @@
+ 				p[0], p[1], p[2], p[3] = to8(c[2]), to8(c[1]), to8(c[0]), 255
+ 				continue
+ 			}
+-			blend(p, c, cov)
++			if r.s.Effects[op.Start].Effect.ReplaceBackdrop {
++				blendBackdrop(p, c, cov)
++			} else {
++				blend(p, c, cov)
++			}
+ 		}
+ 	}
+ }
+@@ -307,3 +311,14 @@
+ 		}
+ 	}
+ }
++
++// A backdrop filter replaces the previous sample, including its alpha.
++func blendBackdrop(p []byte, c [4]float32, cov float32) {
++	for i := range 4 {
++		channel := i
++		if i < 3 {
++			channel = 2 - i
++		}
++		p[i] = to8(c[channel]*cov + float32(p[i])/255*(1-cov))
++	}
++}
+--- a/internal/raster/transform.go
++++ b/internal/raster/transform.go
+@@ -174,7 +174,13 @@
+ 				blend(p, c, cov*clip*opacityOf(op.Opacity))
+ 			case scene.OpEffect:
+ 				if px != nil {
+-					blend(p, px.Color(lx, ly, b), cov*clip*opacityOf(op.Opacity))
++					color := px.Color(lx, ly, b)
++					coverage := cov * clip * opacityOf(op.Opacity)
++					if r.s.Effects[op.Start].Effect.ReplaceBackdrop {
++						blendBackdrop(p, color, coverage)
++					} else {
++						blend(p, color, coverage)
++					}
+ 				}
+ 			case scene.OpHole:
+ 				erase(p, cov*clip*opacityOf(op.Opacity))
+--- a/plugins/glass/blur.go
++++ b/plugins/glass/blur.go
+@@ -18,6 +18,8 @@
+ //		Mask:   &ui.LinearGradient{From: ui.RGB(0, 0, 0), To: ui.Transparent, Angle: 180},
+ //	})
+ type Blur struct {
++	// Replace preserves translucent backdrop alpha; supported for uniform CPU/D3D11 blurs.
++	Replace bool
+ 	// Radius is how much what shows through blurs, in DIPs: the standard
+ 	// deviation of a Gaussian, as CSS's blur() takes.
+ 	Radius float32
+@@ -102,6 +104,9 @@
+ 	px := scene.Rect{X: round(box.X * s), Y: round(box.Y * s)}
+ 	px.W, px.H = round((box.X+box.W)*s)-px.X, round((box.Y+box.H)*s)-px.Y
+ 	blurOps(px, radii == [4]float32{}, b.Radius*s, b.Mask, func(r scene.Rect, fx scene.EffectOp) {
++		if b.Replace && b.Mask == nil {
++			fx.Effect = replacingBlurEffect
++		}
+ 		p.Effect(fx.Effect, ui.Rect{X: r.X / s, Y: r.Y / s, W: r.W / s, H: r.H / s}, radii, fx.Blur, fx.Params)
+ 	})
+ }
+--- a/plugins/glass/effect.go
++++ b/plugins/glass/effect.go
+@@ -178,3 +178,11 @@
+ 	}
+ 	return 0
+ }
++
++var replacingBlurEffect = func() *scene.Effect {
++	e := *blurEffect
++	e.Name = "frosted-blur"
++	e.ReplaceBackdrop = true
++	e.HLSL.Source = "#define MYGO_REPLACE_BACKDROP 1\n" + e.HLSL.Source
++	return &e
++}()
+--- a/internal/gpu/d3d11/effect.hlsl
++++ b/internal/gpu/d3d11/effect.hlsl
+@@ -72,5 +72,10 @@
+ 	PSOut o;
+ 	o.color = res;
+ 	o.alpha = res.aaaa;
++#ifdef MYGO_REPLACE_BACKDROP
++    // Source alpha is the filtered layer alpha, not geometry coverage.
++    float cov = localCoverage(i.pt.xy, i.rect, i.radii, i.transform0.w, fr) * clipCoverage(i) * i.params.w;
++    o.alpha = cov.xxxx;
++#endif
+ 	return o;
+ }

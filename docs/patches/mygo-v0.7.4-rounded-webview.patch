@@ -1,0 +1,207 @@
+--- a/internal/platform/platform.go
++++ b/internal/platform/platform.go
+@@ -731,6 +731,8 @@
+ // WebViewPlacement is where the content of a surface shows a web view
+ // (Surface.PlaceWebViews), in DIPs relative to the surface.
+ type WebViewPlacement struct {
++	// Radii are content-box corner radii in DIPs: TL, TR, BR, BL.
++	Radii   [4]float32
+ 	WebView WebView
+ 	// Frame is the web view's box; Clip the part of it that shows, which
+ 	// the frames leave transparent but where the content painted over it.
+@@ -745,6 +747,32 @@
+ func (p *WebViewPlacement) At(x, y float64) bool {
+ 	if !p.Clip.Contains(x, y) {
+ 		return false
++	}
++	f := p.Frame
++	for i, r := range p.Radii {
++		if r <= 0 {
++			continue
++		}
++		radius := float64(r)
++		cx, cy := f.X+radius, f.Y+radius
++		right, bottom := i == 1 || i == 2, i >= 2
++		if right {
++			cx = f.X + f.W - radius
++		}
++		if bottom {
++			cy = f.Y + f.H - radius
++		}
++		inX := x < cx
++		if right {
++			inX = x > cx
++		}
++		inY := y < cy
++		if bottom {
++			inY = y > cy
++		}
++		if inX && inY && (x-cx)*(x-cx)+(y-cy)*(y-cy) > radius*radius {
++			return false
++		}
+ 	}
+ 	for _, c := range p.Covers {
+ 		if c.Contains(x, y) {
+--- a/internal/windows/com.go
++++ b/internal/windows/com.go
+@@ -181,3 +181,17 @@
+ 	s, _, _ := procSHCreateMemStream.Call(uintptr(unsafe.Pointer(p)), uintptr(len(data)))
+ 	return s
+ }
++
++var singleMethods sync.Map
++
++// comCallSingle preserves the ABI for COM methods taking a 32-bit float.
++func comCallSingle(obj uintptr, i int, f float32) uintptr {
++	fn := *(*uintptr)(unsafe.Add(native(*(*uintptr)(native(obj))), i*int(unsafe.Sizeof(uintptr(0)))))
++	m, ok := singleMethods.Load(fn)
++	if !ok {
++		var call func(uintptr, float32) uintptr
++		purego.RegisterFunc(&call, fn)
++		m, _ = singleMethods.LoadOrStore(fn, call)
++	}
++	return m.(func(uintptr, float32) uintptr)(obj, f)
++}
+--- a/internal/windows/window.go
++++ b/internal/windows/window.go
+@@ -89,6 +89,8 @@
+ 	host             *window
+ 	comp, comp3, uia uintptr
+ 	clipVis, webVis  uintptr
++	roundClip        uintptr
++	webRadii         [4]float32
+ 	frame, clip      platform.RectF
+ 	shown, focused   bool
+ 	hidden           bool
+--- a/internal/windows/webview_embed.go
++++ b/internal/windows/webview_embed.go
+@@ -160,6 +160,13 @@
+ 	}
+ 	v.clipVis, v.webVis = s.layer.visual(), s.layer.visual()
+ 	comCall(v.clipVis, dcompVisualAddVisual, v.webVis, 1, 0)
++	if hr := comCall(s.layer.dcomp, 24, uintptr(unsafe.Pointer(&v.roundClip))); failed(hr) {
++		release(v.webVis)
++		release(v.clipVis)
++		return nil, hresultError("IDCompositionDevice::CreateRectangleClip", hr)
++	}
++	comCall(v.webVis, 13, v.roundClip) // IDCompositionVisual::SetClip(IDCompositionClip*)
++
+ 	s.w.webViews = append(s.w.webViews, v)
+ 	b.whenEnvironment(v.createWebView)
+ 	return v, nil
+@@ -269,6 +276,7 @@
+ 	for _, p := range views {
+ 		if v, ok := p.WebView.(*window); ok && v.host == s.w && !v.closed {
+ 			v.frame, v.clip, v.shown = p.Frame, p.Clip, true
++			v.webRadii = p.Radii
+ 			shown = append(shown, v)
+ 		}
+ 	}
+@@ -318,6 +326,19 @@
+ 	// surface's pixels, place what WebView2 shows in windows of its own,
+ 	// as a select's options.
+ 	translate(w.webVis, fx-cx, fy-cy)
++	// Clip the composition visual itself, including the page's scrollbars.
++	// MSVC orders overloaded methods in reverse declaration order: float setters follow animation setters.
++	width, height := px(w.frame.X+w.frame.W)-fx, px(w.frame.Y+w.frame.H)-fy
++	comCallSingle(w.roundClip, 4, 0)
++	comCallSingle(w.roundClip, 6, 0)
++	comCallSingle(w.roundClip, 8, width)
++	comCallSingle(w.roundClip, 10, height)
++	for i, index := range []int{12, 16, 24, 20} {
++		radius := min(w.webRadii[i]*float32(dpi)/96, width, height)
++		comCallSingle(w.roundClip, index, radius)
++		comCallSingle(w.roundClip, index+2, radius)
++	}
++
+ 	if w.controller == 0 {
+ 		return
+ 	}
+@@ -518,6 +539,8 @@
+ 			s.layer.commit()
+ 		}
+ 	}
++	release(w.roundClip)
++	w.roundClip = 0
+ 	release(w.webVis)
+ 	release(w.clipVis)
+ 	w.webVis, w.clipVis = 0, 0
+--- a/ui/webview.go
++++ b/ui/webview.go
+@@ -47,6 +47,7 @@
+ // webPlace is where a frame shows a web view: hit is the index of its
+ // element's own hit, inert that it shows but takes no pointer.
+ type webPlace struct {
++	radii [4]float32
+ 	v     NativeWebView
+ 	frame Rect
+ 	clip  Rect
+@@ -73,11 +74,18 @@
+ 	if b.W <= 0 || b.H <= 0 || v.W <= 0 || v.H <= 0 {
+ 		return
+ 	}
+-	rt.webPlaces = append(rt.webPlaces, webPlace{v: e.webView, frame: b, clip: v, hit: len(rt.hits), inert: invisible})
++	inset := [4]float32{e.border[0] + e.pad[0], e.border[1] + e.pad[1], e.border[2] + e.pad[2], e.border[3] + e.pad[3]}
++	box := scene.Rect{X: e.x, Y: e.y, W: e.w, H: e.h}
++	_, radii := scene.InnerRadii(box, scene.Corners(box, e.radius, continuousCorners), inset)
++	for i := range radii {
++		radii[i] = abs32(radii[i])
++	}
++	rt.webPlaces = append(rt.webPlaces, webPlace{radii: radii, v: e.webView, frame: b, clip: v, hit: len(rt.hits), inert: invisible})
+ }
+ 
+ // placedWebView is where a frame shows a web view, for the host.
+ type placedWebView struct {
++	radii       [4]float32
+ 	v           NativeWebView
+ 	frame, clip platform.RectF
+ 	covers      []platform.RectF
+@@ -99,7 +107,7 @@
+ 			// The inert one went first: this one takes its place.
+ 			out = slices.DeleteFunc(out, func(o placedWebView) bool { return o.v == wp.v })
+ 		}
+-		out = append(out, placedWebView{v: wp.v, frame: rectF(wp.frame), clip: rectF(wp.clip), covers: wp.covers(rt.hits)})
++		out = append(out, placedWebView{radii: wp.radii, v: wp.v, frame: rectF(wp.frame), clip: rectF(wp.clip), covers: wp.covers(rt.hits)})
+ 	}
+ 	rt.webOut = out
+ 	return out
+--- a/ui/window.go
++++ b/ui/window.go
+@@ -897,12 +897,12 @@
+ 	natives := make([]NativeWebView, 0, len(views))
+ 	for _, v := range views {
+ 		if n := v.v.SurfaceWebView(h.conn); n != nil {
+-			list = append(list, platform.WebViewPlacement{WebView: n, Frame: v.frame, Clip: v.clip, Covers: v.covers})
++			list = append(list, platform.WebViewPlacement{Radii: v.radii, WebView: n, Frame: v.frame, Clip: v.clip, Covers: v.covers})
+ 			natives = append(natives, v.v)
+ 		}
+ 	}
+ 	if slices.EqualFunc(list, h.placed, func(a, b platform.WebViewPlacement) bool {
+-		return a.WebView == b.WebView && a.Frame == b.Frame && a.Clip == b.Clip && slices.Equal(a.Covers, b.Covers)
++		return a.Radii == b.Radii && a.WebView == b.WebView && a.Frame == b.Frame && a.Clip == b.Clip && slices.Equal(a.Covers, b.Covers)
+ 	}) {
+ 		return
+ 	}
+--- a/ui/zoom.go
++++ b/ui/zoom.go
+@@ -130,6 +130,9 @@
+ 	for i := range views {
+ 		v := &views[i]
+ 		v.frame, v.clip = rt.toWindow(v.frame), rt.toWindow(v.clip)
++		for j := range v.radii {
++			v.radii[j] *= rt.contentZoom
++		}
+ 		for j := range v.covers {
+ 			v.covers[j] = rt.toWindow(v.covers[j])
+ 		}
+--- a/ui/headless.go
++++ b/ui/headless.go
+@@ -641,7 +641,7 @@
+ // painted nothing over it that takes the pointer; nil for none.
+ func (t *Tester) WebViewAt(x, y float32) NativeWebView {
+ 	for _, v := range slices.Backward(t.h.webViews) {
+-		p := platform.WebViewPlacement{Clip: v.clip, Covers: v.covers}
++		p := platform.WebViewPlacement{Radii: v.radii, Frame: v.frame, Clip: v.clip, Covers: v.covers}
+ 		if p.At(float64(x), float64(y)) {
+ 			return v.v
+ 		}

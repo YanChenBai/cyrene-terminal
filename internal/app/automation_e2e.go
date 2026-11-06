@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/egoist/mygo"
 	_ "github.com/egoist/mygo/plugins/automation"
@@ -41,4 +42,25 @@ func showAcceptanceWindow(win *mygo.Window) {
 		win.SetPosition(-10000, 0)
 		win.ShowInactive()
 	}
+}
+
+// Native window captures omit the embedded page's separate compositor surface.
+func captureAcceptanceBrowser(view *mygo.WebView, id int) {
+	dir := os.Getenv("CYRENE_ACCEPTANCE_BROWSER_CAPTURE")
+	if dir == "" {
+		return
+	}
+	go func() {
+		data, err := view.CapturePage()
+		if err != nil {
+			return
+		}
+		if os.MkdirAll(dir, 0700) != nil {
+			return
+		}
+		path := filepath.Join(dir, fmt.Sprintf("pane-%d.png", id))
+		if os.WriteFile(path+".tmp", data, 0600) == nil {
+			_ = os.Rename(path+".tmp", path)
+		}
+	}()
 }

@@ -4,7 +4,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/egoist/mygo/plugins/glass"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -133,8 +132,7 @@ func (a *application) dialog(c *ui.Context, key string, open *bool, width float3
 			bar := c.TitleBar()
 			ui.Box(c.Key(key + "-window-drag")).Absolute().Left(0).Top(0).Right(bar.Right).Height(max(32, bar.Height)).DragWindow().Label("拖动窗口")
 
-			ui.Column(c.Key(key+"-panel")).Role(ui.RoleDialog).Width(width).MaxWidth(w-32).Padding(20).Radius(14).Gap(12).
-				Material(glass.Glass{Clarity: 0.25}).Border(1, ui.RGBA(255, 255, 255, 0.1)).
+			raisedOverlay(ui.Column(c.Key(key+"-panel")).Role(ui.RoleDialog).Width(width).MaxWidth(w-32).Padding(22).Radius(16).Gap(14), .25).
 				Opacity(m.Opacity).TransformOrigin(0.5, 0.5).
 				Transform(ui.Scaling(m.Scale, m.Scale).Then(ui.Translation(dx, dy))).
 				Disabled(!m.Target).OnClick(func() {}).Children(build)

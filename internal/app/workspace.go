@@ -11,13 +11,31 @@ import (
 )
 
 type pane struct {
-	ID       int
-	Profile  profile
-	Dir      string
-	Term     *terminal.Terminal
-	Error    string
-	Starting bool
-	Handle   ui.Handle
+	Entered      bool
+	ShowActions  bool
+	Actions      ui.Handle
+	ID           int
+	Profile      profile
+	Command      []string
+	AgentSession string
+	AgentToken   string
+	AgentRecord  string
+	NeedsResume  bool
+	Browser      *browserState
+	ResumeHandle ui.Handle
+	Surface      ui.Handle
+	Header       ui.Handle
+	PaneClose    ui.Handle
+	ChildTab     ui.Handle
+	ChildClose   ui.Handle
+	DropEdge     splitEdge
+	Dir          string
+	Term         *terminal.Terminal
+	Error        string
+	Starting     bool
+	Handle       ui.Handle
+	clipboard    *clipboardStore
+	pasteTail    <-chan struct{}
 }
 
 // A leaf is a pane. A branch owns two subtrees and a draggable split ratio.
@@ -85,9 +103,11 @@ type tab struct {
 }
 
 type workspace struct {
-	Tabs   []*tab
-	Active int
-	nextID int
+	nextWorkspace int
+	Tabs          []*tab
+	Screens       []*screen
+	Active        int
+	nextID        int
 }
 
 func (w *workspace) id() int { w.nextID++; return w.nextID }
@@ -109,6 +129,7 @@ func (w *workspace) add(p profile, dir string) *pane {
 	leaf := w.newPane(p, dir)
 	t := &tab{ID: w.id(), Name: p.Name, Root: &layout{ID: w.id(), Pane: leaf}, Focused: leaf.ID}
 	w.Tabs = append(w.Tabs, t)
+	w.Screens = append(w.Screens, &screen{ID: t.ID, Root: &layout{ID: t.Root.ID, Pane: leaf}, Focused: leaf.ID})
 	w.Active = t.ID
 	return leaf
 }
@@ -118,11 +139,29 @@ func (w *workspace) removeTab(id int) {
 	if i < 0 {
 		return
 	}
+	var remaining *pane
+	for _, p := range w.Tabs[i].Root.leaves() {
+		if s := w.screenForPane(p.ID); s != nil {
+			s.Root = s.Root.remove(p.ID)
+			if s.Root != nil {
+				remaining = s.Root.leaves()[0]
+				if s.Focused == p.ID {
+					s.Focused = remaining.ID
+				}
+			}
+		}
+	}
+	w.pruneScreens()
 	w.Tabs = slices.Delete(w.Tabs, i, i+1)
 	if w.Active == id {
 		w.Active = 0
 		if len(w.Tabs) > 0 {
 			w.Active = w.Tabs[min(i, len(w.Tabs)-1)].ID
+		}
+		if remaining != nil {
+			if t := w.sessionForPane(remaining.ID); t != nil {
+				w.Active = t.ID
+			}
 		}
 	}
 }
@@ -137,6 +176,9 @@ func (t *tab) label() string {
 		return alias
 	}
 	if n := t.Root.find(t.Focused); n != nil {
+		if n.Pane.Browser != nil {
+			return n.Pane.Browser.label()
+		}
 		if dir := strings.TrimSpace(n.Pane.directory()); dir != "" {
 			return filepath.Base(filepath.Clean(dir))
 		}

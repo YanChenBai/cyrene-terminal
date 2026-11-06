@@ -12,9 +12,10 @@ import (
 )
 
 type profile struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Command []string `json:"command,omitempty"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Command       []string `json:"command,omitempty"`
+	ResumeCommand []string `json:"resumeCommand,omitempty"`
 }
 
 type folderGroup struct {
@@ -81,6 +82,9 @@ func (s settings) validate() error {
 		}
 		if len(p.Command) > 0 && p.Command[0] == "" {
 			return fmt.Errorf("启动命令不能为空")
+		}
+		if len(p.ResumeCommand) > 0 && p.ResumeCommand[0] == "" {
+			return fmt.Errorf("恢复命令不能为空")
 		}
 		ids[p.ID] = true
 	}

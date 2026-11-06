@@ -79,12 +79,20 @@ func (a *application) applySettings() {
 
 func (a *application) confirmations(c *ui.Context) {
 	a.dialog(c, "stop", &a.stopConfirm, 440, func() {
-		ui.Text(c, "关闭这个终端？").FontSize(20).Bold()
-		ui.Text(c, "此终端中的进程会结束；关闭应用窗口则只收起到托盘。").Wrap().TextColor(c.Theme().TextMuted)
+		title := "关闭这个终端？"
+		if a.stopScreen != nil {
+			title = fmt.Sprintf("关闭此工作区的 %d 个窗格？", len(a.stopScreen.Root.leaves()))
+		}
+		ui.Text(c, title).FontSize(20).Bold()
+		description := "此终端中的进程会结束；关闭应用窗口则只收起到托盘。"
+		if a.stopScreen != nil {
+			description = "其中的终端进程会结束，网页也会关闭；取消会保留全部窗格。"
+		}
+		ui.Text(c, description).Wrap().TextColor(c.Theme().TextMuted)
 		starting := false
-		if a.stopTarget != nil {
-			for _, p := range a.stopTarget.Root.leaves() {
-				starting = starting || p.Starting
+		for _, t := range a.stopTabs() {
+			for _, p := range t.Root.leaves() {
+				starting = starting || (p.Starting && p.Browser == nil)
 			}
 		}
 		if starting {
@@ -92,7 +100,7 @@ func (a *application) confirmations(c *ui.Context) {
 		}
 		ui.Row(c).Gap(8).Children(func() {
 			textButton(c, "取消").OnClick(func() { a.stopConfirm = false })
-			textButton(c, "终止进程").Disabled(starting).TextColor(c.Theme().Danger).OnClick(func() { a.stopTab(a.stopTarget) })
+			textButton(c, "终止进程").Disabled(starting).TextColor(c.Theme().Danger).OnClick(a.stopSelection)
 		})
 	})
 }

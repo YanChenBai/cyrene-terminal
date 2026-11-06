@@ -14,54 +14,79 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 )
 
 type application struct {
-	inspector         inspectorState
-	windowTitle       string
-	fontNames         []string
-	fontsLoading      bool
-	fontsLoaded       bool
-	aliasEditor       bool
-	aliasTarget       *tab
-	aliasDraft        string
-	work              workspace
-	config            settings
-	draft             settings
-	configFile        string
-	win               *mygo.Window
-	tray              *mygo.Tray
-	quitting          bool
-	closed            atomic.Bool
-	sessionsMu        sync.Mutex
-	sessions          map[*terminal.Terminal]bool
-	start             func(*pane)
-	collapsed         bool
-	sidebarWidth      float32
-	sidebarMotion     sidebarTransition
-	launcher          bool
-	launchGroup       string
-	addHandle         ui.Handle
-	toggleHandle      ui.Handle
-	preferencesHandle ui.Handle
-	groupEditorHandle ui.Handle
-	modalOrigin       ui.Rect
-	dialogs           map[string]*overlayMotion
-	launcherMotion    overlayMotion
-	groupUI           map[string]*groupViewState
-	groupEditor       bool
-	groupEditID       string
-	groupName         string
-	groupDirectory    string
-	groupError        string
-	groupPicking      bool
-	preferences       bool
-	preferencesError  string
-	settingsBusy      bool
-	stopTarget        *tab
-	stopConfirm       bool
-	status            string
+	rendered               bool
+	inspector              inspectorState
+	windowTitle            string
+	tabScroll              ui.ScrollState
+	revealedScreen         int
+	revealedPane           int
+	savingWorkspace        bool
+	quitSaved              bool
+	restoredWorkspace      bool
+	fontNames              []string
+	fontsLoading           bool
+	fontsLoaded            bool
+	aliasEditor            bool
+	aliasTarget            *tab
+	aliasScreen            *screen
+	aliasDraft             string
+	resumeTarget           *pane
+	resumeDraft            string
+	resumeDialog           bool
+	work                   workspace
+	config                 settings
+	draft                  settings
+	configFile             string
+	win                    *mygo.Window
+	tray                   *mygo.Tray
+	quitting               bool
+	closed                 atomic.Bool
+	sessionsMu             sync.Mutex
+	sessions               map[*terminal.Terminal]bool
+	start                  func(*pane)
+	collapsed              bool
+	sidebarWidth           float32
+	sidebarMotion          sidebarTransition
+	launcher               bool
+	launchGroup            string
+	launchWorkspace        bool
+	overlaySnapshotsActive bool
+	overlaySnapshotEpoch   uint64
+	launchTarget           int
+	launchEdge             splitEdge
+	browserTarget          int
+	browserEdge            splitEdge
+	addHandle              ui.Handle
+	toggleHandle           ui.Handle
+	preferencesHandle      ui.Handle
+	groupEditorHandle      ui.Handle
+	modalOrigin            ui.Rect
+	dialogs                map[string]*overlayMotion
+	launcherMotion         overlayMotion
+	groupUI                map[string]*groupViewState
+	groupEditor            bool
+	groupEditID            string
+	groupName              string
+	groupDirectory         string
+	groupError             string
+	groupPicking           bool
+	preferences            bool
+	preferencesError       string
+	settingsBusy           bool
+	stopTarget             *tab
+	stopScreen             *screen
+	pendingDock            *dockRequest
+	pendingTabDrop         *tabDropRequest
+	pendingGroupDrop       *groupDropRequest
+	newGroupHandle         ui.Handle
+	palette                paletteState
+	stopConfirm            bool
+	status                 string
 }
 
 func (a *application) show() {
@@ -77,14 +102,33 @@ func (a *application) show() {
 
 func (a *application) openLauncher(groupID string) {
 	a.launchGroup, a.launcher = groupID, !a.launcher || a.launchGroup != groupID
+	a.launchTarget = 0
+	a.launchWorkspace = false
 }
 
 func (a *application) launch(p profile) {
-	leaf := a.work.add(p, a.directoryForGroup(a.launchGroup))
-	a.work.active().GroupID = a.launchGroup
+	dir, group := a.directoryForGroup(a.launchGroup), a.launchGroup
+	if a.launchTarget != 0 {
+		owner := a.work.sessionForPane(a.launchTarget)
+		if owner == nil {
+			a.status = "目标窗格已关闭"
+			return
+		}
+		dir, group = owner.Root.find(a.launchTarget).Pane.directory(), owner.GroupID
+	}
+	leaf := a.work.add(p, dir)
+	prepareAgentSession(leaf)
+	a.work.active().GroupID = group
 	if a.launchGroup != "" {
 		a.groupState(a.launchGroup).Folded = false
 	}
+	if a.launchTarget != 0 {
+		a.dockPane(leaf.ID, a.launchTarget, a.launchEdge)
+	}
+	if a.launchWorkspace || (a.launchGroup != "" && a.launchTarget == 0) {
+		a.work.markWorkspace(a.work.activeScreen())
+	}
+	a.launchWorkspace = false
 	a.launcher = false
 	if leaf != nil && a.start != nil {
 		leaf.Handle.Focus()
@@ -163,14 +207,38 @@ func shellCommandInEnvironment(command []string, env []string) ([]string, error)
 }
 
 func (a *application) startPane(p *pane) {
+	if p.Browser != nil {
+		a.startBrowser(p)
+		return
+	}
 	if p.Starting {
 		return
 	}
 	p.Starting, p.Error = true, ""
+	p.clipboard = &clipboardStore{}
 	conf, win, dir, command := a.config, a.win, p.Dir, slices.Clone(p.Profile.Command)
+	agent := p.Profile.agentName()
+	prepareAgentToken(p)
+	if (agent == "codex" || agent == "claude") && p.AgentToken != "" && p.AgentRecord == "" {
+		p.AgentRecord = filepath.Join(filepath.Dir(a.configFile), "agent-sessions", p.AgentToken+".id")
+	}
+	agentRecord := p.AgentRecord
+	if len(p.Command) > 0 {
+		command = slices.Clone(p.Command)
+	}
 	go func() {
-		env := terminalEnvironment()
-		cmd, err := shellCommandInEnvironment(command, env)
+		env := codexEnvironment(terminalEnvironment(), agentRecord)
+		var err error
+		if agent == "codex" && agentRecord != "" {
+			command, err = prepareCodexCommand(command, agentRecord)
+		}
+		if err == nil && agent == "claude" && agentRecord != "" {
+			command, err = prepareClaudeCommand(command, agentRecord, dir)
+		}
+		var cmd []string
+		if err == nil {
+			cmd, err = shellCommandInEnvironment(command, env)
+		}
 		if err == nil && dir != "" {
 			var stat os.FileInfo
 			stat, err = os.Stat(dir)
@@ -186,14 +254,9 @@ func (a *application) startPane(p *pane) {
 				Font:  terminal.Font{Family: conf.FontFamily, Size: conf.FontSize},
 				Theme: conf.terminalTheme(), Padding: terminal.Padding{X: 16, Y: 12},
 				ClipboardRead: terminal.ClipboardAsk,
-				OnTitle: func(title string) {
-					win.Update(func() {
-						if t := a.work.active(); t != nil && t.Focused == p.ID {
-							win.SetTitle(t.label())
-						}
-					})
-				},
-				OnExit: func(int) { win.Invalidate() },
+				OnPaste:       func(d transfer.Data) bool { return a.pasteTerminal(p, d) },
+				OnTitle:       func(string) { win.Invalidate() },
+				OnExit:        func(int) { win.Invalidate() },
 			})
 		}
 		if term != nil {
@@ -210,6 +273,8 @@ func (a *application) startPane(p *pane) {
 			p.Starting = false
 			p.Term = term
 			if term != nil {
+				p.NeedsResume = false
+				a.watchAgentSession(p, term)
 				if t := a.work.active(); t != nil && t.Focused == p.ID {
 					p.Handle.Focus()
 				}
@@ -227,22 +292,25 @@ func (a *application) stopTab(t *tab) {
 	}
 	// Do not terminate a pending start. The confirmation is disabled until ready.
 	for _, p := range t.Root.leaves() {
-		if p.Starting {
+		if p.Starting && p.Browser == nil {
 			return
 		}
 	}
 	for _, p := range t.Root.leaves() {
+		if p.Browser != nil && p.Browser.View != nil {
+			p.Browser.View.Destroy()
+			p.Browser.View = nil
+		}
 		if term := p.Term; term != nil {
 			a.sessionsMu.Lock()
 			delete(a.sessions, term)
 			a.sessionsMu.Unlock()
-			go term.Close()
+			p.Term = nil
+			store := p.clipboard
+			go func() { term.Close(); store.close() }()
 		}
 	}
 	a.work.removeTab(t.ID)
-	if active := a.work.active(); active != nil && a.win != nil {
-		a.win.SetTitle(active.label())
-	}
 	a.stopTarget, a.stopConfirm = nil, false
 }
 
@@ -255,17 +323,27 @@ func (a *application) closeAll() {
 	for term := range terms {
 		term.Close()
 	}
+	for _, t := range a.work.Tabs {
+		for _, p := range t.Root.leaves() {
+			p.clipboard.close()
+		}
+	}
 }
 
 func (a *application) requestStop(t *tab, origin ui.Rect) {
+	if t != nil && t.Root.Pane != nil && t.Root.Pane.Browser != nil {
+		a.stopTab(t)
+		return
+	}
+	a.stopScreen = nil
 	a.stopTarget, a.stopConfirm, a.modalOrigin = t, true, origin
 }
 
 func (a *application) ready() {
 	a.win = mygo.NewWindow(acceptanceWindowOptions(mygo.WindowOptions{
 		Title: "Cyrene Terminal", Width: 1280, Height: 820, MinWidth: 720, MinHeight: 440,
-		StateKey: "main", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: 32,
-		Transparent: true, Vibrancy: mygo.VibrancyGlass, BackgroundColor: "#00000000",
+		StateKey: "main", TitleBarStyle: mygo.TitleBarHidden, TitleBarHeight: workspaceTitleHeight,
+		Transparent: true, Vibrancy: mygo.VibrancyAcrylic, BackgroundColor: "#00000000",
 		Content: a.content(),
 	}))
 	showAcceptanceWindow(a.win)
@@ -301,6 +379,16 @@ func (a *application) ready() {
 		a.tray.OnClick(a.show)
 	}
 	a.start = a.startPane
+	if a.restoredWorkspace {
+		for _, t := range a.work.Tabs {
+			for _, p := range t.Root.leaves() {
+				if !p.NeedsResume || len(p.Command) > 0 {
+					a.start(p)
+				}
+			}
+		}
+		return
+	}
 	// Open a shell without launching any agent automatically.
 	for _, p := range a.config.Profiles {
 		if p.ID == "shell" {
@@ -325,10 +413,17 @@ func Run() {
 	if !mygo.App.RequestSingleInstanceLock() {
 		return
 	}
+	if saved, loadErr := readWorkspace(workspacePath(a.configFile)); loadErr == nil {
+		if restoreErr := a.restoreWorkspace(saved); restoreErr != nil {
+			a.status = "工作区恢复失败，原记录已保留：" + restoreErr.Error()
+		}
+	} else if !os.IsNotExist(loadErr) {
+		a.status = "工作区读取失败，原记录已保留：" + loadErr.Error()
+	}
 	mygo.Theme.SetSource(mygo.ThemeDark)
 	mygo.App.OnSecondInstance(func([]string, string) { a.show() })
 	mygo.App.OnActivate(func(bool) { a.show() })
-	mygo.App.OnBeforeQuit(func(*mygo.QuitEvent) { a.quitting = true })
+	mygo.App.OnBeforeQuit(a.beforeQuit)
 	mygo.App.OnWillQuit(func(*mygo.QuitEvent) {
 		a.closeAll()
 		if a.tray != nil {
